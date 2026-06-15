@@ -130,6 +130,8 @@ pub enum VaultError {
     NoPendingAdmin = 16,
     /// Rewards are not yet vested
     RewardsNotVested = 17,
+    /// Reward distribution amount is too small
+    InsufficientRewardAmount = 18,
 }
 
 impl VaultError {
@@ -202,6 +204,10 @@ impl VaultError {
             Self::RewardsNotVested => ErrorInfo {
                 category: ErrorCategory::Validation,
                 message: "rewards are not yet vested",
+            },
+            Self::InsufficientRewardAmount => ErrorInfo {
+                category: ErrorCategory::Validation,
+                message: "reward distribution amount is too small",
             },
         }
     }

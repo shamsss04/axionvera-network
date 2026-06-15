@@ -86,25 +86,29 @@ impl VaultContract {
         from.require_auth();
 
         with_non_reentrant(&e, || {
-            let (state, position) = storage::store_deposit(&e, &from, amount)?;
+            let state = storage::get_state(&e)?;
             let token = soroban_sdk::token::Client::new(&e, &state.deposit_token);
             token.transfer(&from, &e.current_contract_address(), &amount);
+
+            let (_state, _position) = storage::store_deposit(&e, &from, amount)?;
             events::emit_deposit(&e, from.clone(), amount);
             Ok(())
         })
     }
 
     pub fn withdraw(e: Env, to: Address, amount: i128) -> Result<(), VaultError> {
+        storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
         validate_positive_amount(amount)?;
         to.require_auth();
 
         with_non_reentrant(&e, || {
+            let state = storage::get_state(&e)?;
+            let token = soroban_sdk::token::Client::new(&e, &state.deposit_token);
             let (state, position) = storage::store_withdraw(&e, &to, amount)?;
-            
+
             events::emit_withdraw(&e, to.clone(), amount, position.balance);
 
-            let token = soroban_sdk::token::Client::new(&e, &state.deposit_token);
             token.transfer(&e.current_contract_address(), &to, &amount);
 
             Ok(())
@@ -127,15 +131,17 @@ impl VaultContract {
         admin.require_auth();
 
         with_non_reentrant(&e, || {
-            let next_state = storage::store_reward_distribution(&e, amount)?;
             let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
             reward_token.transfer(&admin, &e.current_contract_address(), &amount);
+
+            let next_state = storage::store_reward_distribution(&e, amount)?;
             events::emit_distribute(&e, admin.clone(), amount);
             Ok(next_state.reward_index)
         })
     }
 
     pub fn claim_rewards(e: Env, user: Address) -> Result<i128, VaultError> {
+        storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
         user.require_auth();
 
