@@ -475,8 +475,11 @@ pub fn store_withdraw(
     // Accrue rewards earned up to this point using the old balance.
     accrue_position_rewards(e, &state, &mut position)?;
 
+    // To prevent DoS, process a small batch of expired locks automatically.
+    // If more locks are expired, the user must call `unlock_expired` manually.
+    const WITHDRAW_UNLOCK_LIMIT: u32 = 5;
     // Process any expired locks, moving them to the liquid balance.
-    unlock_expired_locks(e, user)?;
+    unlock_expired_locks(e, user, WITHDRAW_UNLOCK_LIMIT)?;
 
     let liquid_balance = get_liquid_balance_unchecked(e, user);
     if liquid_balance < amount {
@@ -555,18 +558,24 @@ pub fn store_lock(
     Ok(())
 }
 
-pub fn unlock_expired_locks(e: &Env, user: &Address) -> Result<i128, VaultError> {
+pub fn unlock_expired_locks(e: &Env, user: &Address, limit: u32) -> Result<i128, VaultError> {
+    if limit == 0 {
+        return Ok(0);
+    }
+
     let current_timestamp = e.ledger().timestamp();
     let locks = get_user_locks_unchecked(e, user);
 
     let mut unlocked_amount: i128 = 0;
     let mut new_locks = soroban_sdk::Vec::new(e);
+    let mut processed_count = 0;
 
     for lock in locks.iter() {
-        if lock.unlock_timestamp <= current_timestamp {
+        if lock.unlock_timestamp <= current_timestamp && processed_count < limit {
             unlocked_amount = unlocked_amount
                 .checked_add(lock.amount)
                 .ok_or(ArithmeticError::Overflow)?;
+            processed_count += 1;
         } else {
             new_locks.push_back(lock);
         }

@@ -90,6 +90,8 @@ pub enum AuthorizationError {
     /// Thrown when a reentrant call is detected by the guard.
     ReentrancyDetected,
     UpgradeFailed,
+    /// Thrown when an operation would exceed the budget (e.g., too many locks to process).
+    OperationLimitExceeded,
 }
 
 /// The primary error type for the Vault contract.
@@ -136,6 +138,10 @@ pub enum VaultError {
     InsufficientRewardAmount = 18,
     /// Lock duration must be greater than zero
     InvalidLockDuration = 19,
+    /// Contract upgrade failed
+    UpgradeFailed = 20,
+    /// The operation would exceed the per-transaction budget limit
+    OperationLimitExceeded = 21,
 }
 
 impl VaultError {
@@ -217,6 +223,14 @@ impl VaultError {
                 category: ErrorCategory::Validation,
                 message: "lock duration must be greater than zero",
             },
+            Self::UpgradeFailed => ErrorInfo {
+                category: ErrorCategory::Authorization,
+                message: "contract upgrade failed",
+            },
+            Self::OperationLimitExceeded => ErrorInfo {
+                category: ErrorCategory::State,
+                message: "operation would exceed the per-transaction budget limit",
+            },
         }
     }
 
@@ -292,6 +306,7 @@ impl From<AuthorizationError> for VaultError {
             AuthorizationError::Unauthorized => Self::Unauthorized,
             AuthorizationError::ReentrancyDetected => Self::ReentrancyDetected,
             AuthorizationError::UpgradeFailed => Self::UpgradeFailed,
+            AuthorizationError::OperationLimitExceeded => Self::OperationLimitExceeded,
         }
     }
 }

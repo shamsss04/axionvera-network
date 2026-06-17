@@ -41,21 +41,14 @@ impl VaultContract {
         Ok(())
     }
 
-    pub fn propose_new_admin(
-        e: Env,
-        current_admin: Address,
-        new_admin: Address,
-    ) -> Result<(), VaultError> {
+    pub fn propose_new_admin(e: Env, new_admin: Address) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
 
-        let configured_admin = storage::get_admin(&e)?;
-        if current_admin != configured_admin {
-            return Err(AuthorizationError::Unauthorized.into());
-        }
+        let admin = storage::get_admin(&e)?;
+        admin.require_auth();
 
-        current_admin.require_auth();
         storage::set_pending_admin(&e, &new_admin);
-        events::emit_admin_transfer_proposed(&e, current_admin, new_admin);
+        events::emit_admin_transfer_proposed(&e, admin, new_admin);
 
         Ok(())
     }
@@ -165,13 +158,19 @@ impl VaultContract {
         })
     }
 
-    pub fn unlock_expired(e: Env, user: Address) -> Result<i128, VaultError> {
+    pub fn unlock_expired(e: Env, user: Address, limit: u32) -> Result<i128, VaultError> {
         storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
         user.require_auth();
 
+        // Enforce a maximum limit to prevent budget exhaustion in a single call.
+        const MAX_UNLOCK_LIMIT: u32 = 50;
+        if limit > MAX_UNLOCK_LIMIT {
+            return Err(VaultError::OperationLimitExceeded);
+        }
+
         with_non_reentrant(&e, || {
-            let unlocked_amount = storage::unlock_expired_locks(&e, &user)?;
+            let unlocked_amount = storage::unlock_expired_locks(&e, &user, limit)?;
             if unlocked_amount > 0 {
                 events::emit_unlock(&e, user, unlocked_amount);
             }
@@ -248,36 +247,26 @@ impl VaultContract {
         storage::get_reward_token(&e)
     }
 
-    pub fn pause_contract(e: Env, admin: Address) -> Result<(), VaultError> {
+    pub fn pause_contract(e: Env) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
-        let current_admin = storage::get_admin(&e)?;
-        if current_admin != admin {
-            return Err(VaultError::Unauthorized);
-        }
+        let admin = storage::get_admin(&e)?;
         admin.require_auth();
         storage::set_paused(&e, true);
         Ok(())
     }
 
-    pub fn unpause_contract(e: Env, admin: Address) -> Result<(), VaultError> {
+    pub fn unpause_contract(e: Env) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
-        let current_admin = storage::get_admin(&e)?;
-        if current_admin != admin {
-            return Err(VaultError::Unauthorized);
-        }
+        let admin = storage::get_admin(&e)?;
         admin.require_auth();
         storage::set_paused(&e, false);
         Ok(())
     }
 
-    pub fn upgrade(e: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), VaultError> {
+    pub fn upgrade(e: Env, new_wasm_hash: BytesN<32>) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
+        let admin = storage::get_admin(&e)?;
         admin.require_auth();
-
-        let stored_admin = storage::get_admin(&e)?;
-        if admin != stored_admin {
-            return Err(VaultError::UpgradeFailed);
-        }
 
         e.deployer().update_current_contract_wasm(new_wasm_hash.clone());
         events::emit_upgrade(&e, admin, new_wasm_hash);
