@@ -1,6 +1,6 @@
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, Address, Env, Map};
 
-use crate::errors::{ArithmeticError, AuthorizationError, BalanceError, StateError, VaultError};
+use crate::errors::{ArithmeticError, AuthorizationError, BalanceError, StateError, ValidationError, VaultError};
 
 pub const PRECISION_FACTOR: i128 = 1_000_000_000;
 const REWARD_INDEX_SCALE: i128 = PRECISION_FACTOR;
@@ -21,13 +21,13 @@ pub enum DataKey {
     Admin,
     /// Pending admin address (for two-step transfer)
     PendingAdmin,
-    /// Deposit token address
+    /// Deposit token address (legacy, kept for backwards compatibility)
     DepositToken,
     /// Reward token address
     RewardToken,
-    /// Total deposits amount
+    /// Total deposits amount (legacy, kept for backwards compatibility)
     TotalDeposits,
-    /// Global reward index
+    /// Global reward index (legacy, kept for backwards compatibility)
     RewardIndex,
     /// Vesting period in seconds
     VestingPeriod,
@@ -35,14 +35,28 @@ pub enum DataKey {
     ReentrancyGuard,
     /// Pause flag
     IsPaused,
-    /// User balance
+    /// User balance (legacy, kept for backwards compatibility)
     UserBalance(Address),
-    /// User's last synced reward index
+    /// User's last synced reward index (legacy, kept for backwards compatibility)
     UserRewardIndex(Address),
-    /// User's accrued but unvested rewards
+    /// User's accrued but unvested rewards (legacy, kept for backwards compatibility)
     UserAccruedRewards(Address),
-    /// User's last reward distribution timestamp (for vesting calculation)
+    /// User's last reward distribution timestamp (legacy, kept for backwards compatibility)
     UserLastRewardTimestamp(Address),
+    /// Map of supported asset addresses
+    SupportedAssets,
+    /// Total deposits per asset
+    AssetTotalDeposits(Address),
+    /// Global reward index per asset
+    AssetRewardIndex(Address),
+    /// User balance per asset
+    UserAssetBalance(Address, Address), // (user, asset)
+    /// User's last synced reward index per asset
+    UserAssetRewardIndex(Address, Address), // (user, asset)
+    /// User's accrued but unvested rewards per asset
+    UserAssetAccruedRewards(Address, Address), // (user, asset)
+    /// User's last reward distribution timestamp per asset
+    UserAssetLastRewardTimestamp(Address, Address), // (user, asset)
 }
 
 /// The global state of the vault contract.
@@ -63,7 +77,7 @@ pub struct VaultState {
     pub vesting_period: u64,
 }
 
-/// Snapshot of a user's position in the vault.
+/// Snapshot of a user's position in the vault for a specific asset.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UserPosition {
@@ -75,6 +89,14 @@ pub struct UserPosition {
     pub accrued_rewards: i128,
     /// The timestamp of the last reward distribution affecting this user.
     pub last_reward_timestamp: u64,
+}
+
+/// Snapshot of a user's position across multiple assets.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultiAssetPosition {
+    /// Map of asset address to user position
+    pub positions: Map<Address, UserPosition>,
 }
 
 /// A helper struct for returning reward information in view functions.
@@ -619,4 +641,349 @@ fn bump_persistent_ttl(e: &Env, key: &DataKey) {
     e.storage()
         .persistent()
         .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-Asset Support Functions
+// ---------------------------------------------------------------------------
+
+/// Add a new supported asset to the vault
+pub fn add_supported_asset(e: &Env, asset: &Address) -> Result<(), VaultError> {
+    let mut assets = get_supported_assets(e);
+    if !assets.contains_key(asset.clone()) {
+        assets.set(asset.clone(), true);
+        e.storage().instance().set(&DataKey::SupportedAssets, &assets);
+        
+        // Initialize asset-specific state
+        e.storage().instance().set(&DataKey::AssetTotalDeposits(asset.clone()), &0_i128);
+        e.storage().instance().set(&DataKey::AssetRewardIndex(asset.clone()), &0_i128);
+        
+        bump_instance_ttl(e);
+    }
+    Ok(())
+}
+
+/// Get all supported assets
+pub fn get_supported_assets(e: &Env) -> Map<Address, bool> {
+    e.storage()
+        .instance()
+        .get(&DataKey::SupportedAssets)
+        .unwrap_or(Map::new(e))
+}
+
+/// Check if an asset is supported
+pub fn is_asset_supported(e: &Env, asset: &Address) -> bool {
+    let assets = get_supported_assets(e);
+    assets.contains_key(asset.clone())
+}
+
+/// Get total deposits for a specific asset
+pub fn get_asset_total_deposits(e: &Env, asset: &Address) -> Result<i128, VaultError> {
+    if !is_asset_supported(e, asset) {
+        return Err(ValidationError::InvalidAddress.into());
+    }
+    Ok(e.storage()
+        .instance()
+        .get(&DataKey::AssetTotalDeposits(asset.clone()))
+        .unwrap_or(0_i128))
+}
+
+/// Set total deposits for a specific asset
+pub fn set_asset_total_deposits(e: &Env, asset: &Address, total: i128) {
+    e.storage().instance().set(&DataKey::AssetTotalDeposits(asset.clone()), &total);
+    bump_instance_ttl(e);
+}
+
+/// Get reward index for a specific asset
+pub fn get_asset_reward_index(e: &Env, asset: &Address) -> Result<i128, VaultError> {
+    if !is_asset_supported(e, asset) {
+        return Err(ValidationError::InvalidAddress.into());
+    }
+    Ok(e.storage()
+        .instance()
+        .get(&DataKey::AssetRewardIndex(asset.clone()))
+        .unwrap_or(0_i128))
+}
+
+/// Set reward index for a specific asset
+pub fn set_asset_reward_index(e: &Env, asset: &Address, index: i128) {
+    e.storage().instance().set(&DataKey::AssetRewardIndex(asset.clone()), &index);
+    bump_instance_ttl(e);
+}
+
+/// Get user position for a specific asset
+pub fn get_user_asset_position(e: &Env, user: &Address, asset: &Address) -> Result<UserPosition, VaultError> {
+    require_initialized(e)?;
+    if !is_asset_supported(e, asset) {
+        return Err(ValidationError::InvalidAddress.into());
+    }
+    Ok(get_user_asset_position_unchecked(e, user, asset))
+}
+
+pub fn get_user_asset_position_unchecked(e: &Env, user: &Address, asset: &Address) -> UserPosition {
+    let balance_key = DataKey::UserAssetBalance(user.clone(), asset.clone());
+    let reward_index_key = DataKey::UserAssetRewardIndex(user.clone(), asset.clone());
+    let accrued_rewards_key = DataKey::UserAssetAccruedRewards(user.clone(), asset.clone());
+    let last_reward_timestamp_key = DataKey::UserAssetLastRewardTimestamp(user.clone(), asset.clone());
+
+    let balance = e.storage().persistent().get(&balance_key).unwrap_or(0_i128);
+    let reward_index = e
+        .storage()
+        .persistent()
+        .get(&reward_index_key)
+        .unwrap_or(0_i128);
+    let accrued_rewards = e
+        .storage()
+        .persistent()
+        .get(&accrued_rewards_key)
+        .unwrap_or(0_i128);
+    let last_reward_timestamp = e
+        .storage()
+        .persistent()
+        .get(&last_reward_timestamp_key)
+        .unwrap_or(0_u64);
+
+    if balance != 0 {
+        bump_persistent_ttl(e, &balance_key);
+    }
+    if reward_index != 0 {
+        bump_persistent_ttl(e, &reward_index_key);
+    }
+    if accrued_rewards != 0 {
+        bump_persistent_ttl(e, &accrued_rewards_key);
+    }
+    if last_reward_timestamp != 0 {
+        bump_persistent_ttl(e, &last_reward_timestamp_key);
+    }
+
+    UserPosition {
+        balance,
+        reward_index,
+        accrued_rewards,
+        last_reward_timestamp,
+    }
+}
+
+/// Set user position for a specific asset
+pub fn set_user_asset_position(e: &Env, user: &Address, asset: &Address, position: &UserPosition) {
+    let balance_key = DataKey::UserAssetBalance(user.clone(), asset.clone());
+    let reward_index_key = DataKey::UserAssetRewardIndex(user.clone(), asset.clone());
+    let accrued_rewards_key = DataKey::UserAssetAccruedRewards(user.clone(), asset.clone());
+    let last_reward_timestamp_key = DataKey::UserAssetLastRewardTimestamp(user.clone(), asset.clone());
+
+    if position.balance == 0 {
+        e.storage().persistent().remove(&balance_key);
+    } else {
+        e.storage().persistent().set(&balance_key, &position.balance);
+        bump_persistent_ttl(e, &balance_key);
+    }
+
+    if position.reward_index == 0 {
+        e.storage().persistent().remove(&reward_index_key);
+    } else {
+        e.storage()
+            .persistent()
+            .set(&reward_index_key, &position.reward_index);
+        bump_persistent_ttl(e, &reward_index_key);
+    }
+
+    if position.accrued_rewards == 0 {
+        e.storage().persistent().remove(&accrued_rewards_key);
+    } else {
+        e.storage()
+            .persistent()
+            .set(&accrued_rewards_key, &position.accrued_rewards);
+        bump_persistent_ttl(e, &accrued_rewards_key);
+    }
+
+    e.storage()
+        .persistent()
+        .set(&last_reward_timestamp_key, &position.last_reward_timestamp);
+    bump_persistent_ttl(e, &last_reward_timestamp_key);
+}
+
+/// Get user balance for a specific asset
+pub fn get_user_asset_balance(e: &Env, user: &Address, asset: &Address) -> Result<i128, VaultError> {
+    Ok(get_user_asset_position(e, user, asset)?.balance)
+}
+
+/// Store deposit for a specific asset
+pub fn store_asset_deposit(
+    e: &Env,
+    user: &Address,
+    asset: &Address,
+    amount: i128,
+) -> Result<UserPosition, VaultError> {
+    if !is_asset_supported(e, asset) {
+        return Err(ValidationError::InvalidAddress.into());
+    }
+    
+    let mut position = get_user_asset_position_unchecked(e, user, asset);
+    let asset_reward_index = get_asset_reward_index(e, asset)?;
+    let asset_total = get_asset_total_deposits(e, asset)?;
+    
+    // Accrue rewards earned up to this point using the old balance.
+    accrue_asset_position_rewards(e, asset_reward_index, &mut position)?;
+
+    // Update balance and total deposits.
+    position.balance = position
+        .balance
+        .checked_add(amount)
+        .ok_or(ArithmeticError::Overflow)?;
+    let next_total = asset_total
+        .checked_add(amount)
+        .ok_or(ArithmeticError::Overflow)?;
+
+    // Persist changes.
+    set_asset_total_deposits(e, asset, next_total);
+    set_user_asset_position(e, user, asset, &position);
+
+    Ok(position)
+}
+
+/// Store withdraw for a specific asset
+pub fn store_asset_withdraw(
+    e: &Env,
+    user: &Address,
+    asset: &Address,
+    amount: i128,
+) -> Result<UserPosition, VaultError> {
+    if !is_asset_supported(e, asset) {
+        return Err(ValidationError::InvalidAddress.into());
+    }
+    
+    let mut position = get_user_asset_position_unchecked(e, user, asset);
+    let asset_reward_index = get_asset_reward_index(e, asset)?;
+    let asset_total = get_asset_total_deposits(e, asset)?;
+    
+    // Accrue rewards earned up to this point using the old balance.
+    accrue_asset_position_rewards(e, asset_reward_index, &mut position)?;
+
+    if position.balance < amount {
+        return Err(BalanceError::InsufficientBalance.into());
+    }
+    
+    // Update balance and total deposits.
+    position.balance = position
+        .balance
+        .checked_sub(amount)
+        .ok_or(ArithmeticError::Overflow)?;
+    let next_total = asset_total
+        .checked_sub(amount)
+        .ok_or(ArithmeticError::Overflow)?;
+
+    // Persist changes.
+    set_asset_total_deposits(e, asset, next_total);
+    set_user_asset_position(e, user, asset, &position);
+
+    Ok(position)
+}
+
+/// Store reward distribution for a specific asset
+pub fn store_asset_reward_distribution(e: &Env, asset: &Address, amount: i128) -> Result<i128, VaultError> {
+    if !is_asset_supported(e, asset) {
+        return Err(ValidationError::InvalidAddress.into());
+    }
+    
+    let asset_total = get_asset_total_deposits(e, asset)?;
+    let asset_reward_index = get_asset_reward_index(e, asset)?;
+    
+    let increment = checked_reward_index_increment(amount, asset_total)?;
+    let next_reward_index = asset_reward_index
+        .checked_add(increment)
+        .ok_or(ArithmeticError::Overflow)?;
+
+    set_asset_reward_index(e, asset, next_reward_index);
+
+    Ok(next_reward_index)
+}
+
+/// Claim rewards for a specific asset
+pub fn store_asset_claimable_rewards(e: &Env, user: &Address, asset: &Address) -> Result<i128, VaultError> {
+    if !is_asset_supported(e, asset) {
+        return Err(ValidationError::InvalidAddress.into());
+    }
+    
+    let state = get_state(e)?;
+    let mut position = get_user_asset_position_unchecked(e, user, asset);
+    let asset_reward_index = get_asset_reward_index(e, asset)?;
+    
+    // Accrue all rewards earned up to the current global index.
+    accrue_asset_position_rewards(e, asset_reward_index, &mut position)?;
+
+    // Calculate vested rewards
+    let current_timestamp = e.ledger().timestamp();
+    let vested = calculate_vested_rewards(current_timestamp, &position, state.vesting_period)?;
+
+    // Update position with remaining accrued rewards
+    position.accrued_rewards = position
+        .accrued_rewards
+        .checked_sub(vested)
+        .ok_or(ArithmeticError::Overflow)?;
+
+    set_user_asset_position(e, user, asset, &position);
+
+    Ok(vested)
+}
+
+/// Preview user rewards for a specific asset
+pub fn preview_user_asset_rewards(e: &Env, user: &Address, asset: &Address) -> Result<UserRewardSnapshot, VaultError> {
+    require_initialized(e)?;
+    if !is_asset_supported(e, asset) {
+        return Err(ValidationError::InvalidAddress.into());
+    }
+    
+    let state = get_state(e)?;
+    let mut position = get_user_asset_position_unchecked(e, user, asset);
+    let asset_reward_index = get_asset_reward_index(e, asset)?;
+    
+    // Calculate accrued rewards without modifying state
+    accrue_asset_position_rewards(e, asset_reward_index, &mut position)?;
+
+    let current_timestamp = e.ledger().timestamp();
+    let vested = calculate_vested_rewards(current_timestamp, &position, state.vesting_period)?;
+
+    Ok(UserRewardSnapshot {
+        reward_index: position.reward_index,
+        rewards: position.accrued_rewards,
+        vested_rewards: vested,
+    })
+}
+
+pub fn pending_user_asset_rewards_view(e: &Env, user: &Address, asset: &Address) -> Result<i128, VaultError> {
+    Ok(preview_user_asset_rewards(e, user, asset)?.rewards)
+}
+
+pub fn vested_user_asset_rewards_view(e: &Env, user: &Address, asset: &Address) -> Result<i128, VaultError> {
+    Ok(preview_user_asset_rewards(e, user, asset)?.vested_rewards)
+}
+
+fn accrue_asset_position_rewards(
+    e: &Env,
+    asset_reward_index: i128,
+    position: &mut UserPosition,
+) -> Result<(), VaultError> {
+    if asset_reward_index == position.reward_index || position.balance == 0 {
+        position.reward_index = asset_reward_index;
+        return Ok(());
+    }
+
+    if position.balance > 0 {
+        let delta = asset_reward_index
+            .checked_sub(position.reward_index)
+            .ok_or(ArithmeticError::Overflow)?;
+        let accrued = checked_accrued_rewards(position.balance, delta)?;
+
+        if accrued > 0 {
+            position.accrued_rewards = position
+                .accrued_rewards
+                .checked_add(accrued)
+                .ok_or(ArithmeticError::Overflow)?;
+            // Update last reward timestamp whenever new rewards are accrued
+            position.last_reward_timestamp = e.ledger().timestamp();
+        }
+    }
+
+    position.reward_index = asset_reward_index;
+    Ok(())
 }

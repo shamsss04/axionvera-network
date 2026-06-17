@@ -140,3 +140,322 @@ fn test_vesting() {
     let claimed = client.claim_rewards(&user);
     assert_eq!(claimed, 200000);
 }
+
+// ---------------------------------------------------------------------------
+// Multi-Asset Tests
+// ---------------------------------------------------------------------------
+
+/// Tests adding a new asset to the vault.
+#[test]
+fn test_add_asset() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, VaultContract);
+    let client = VaultContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let deposit_token = Address::generate(&e);
+    let reward_token = Address::generate(&e);
+    let vesting_period = 86400u64;
+
+    client.initialize(&admin, &deposit_token, &reward_token, &vesting_period);
+
+    let new_asset = Address::generate(&e);
+    
+    // Add asset
+    client.add_asset(&admin, &new_asset);
+    
+    // Verify asset is supported
+    assert!(client.is_asset_supported(&new_asset));
+}
+
+/// Tests depositing multiple assets.
+#[test]
+fn test_multiple_asset_deposits() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, VaultContract);
+    let client = VaultContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let deposit_token = Address::generate(&e);
+    let reward_token = Address::generate(&e);
+    let vesting_period = 86400u64;
+
+    client.initialize(&admin, &deposit_token, &reward_token, &vesting_period);
+
+    let asset1 = Address::generate(&e);
+    let asset2 = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    // Add assets
+    client.add_asset(&admin, &asset1);
+    client.add_asset(&admin, &asset2);
+
+    // Mock token balances
+    e.as_contract(&asset1, || {
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(user.clone()), &1000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(contract_id.clone()), &0i128);
+    });
+    e.as_contract(&asset2, || {
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(user.clone()), &2000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(contract_id.clone()), &0i128);
+    });
+
+    // Deposit asset1
+    client.deposit_asset(&user, &asset1, &100i128);
+    
+    // Deposit asset2
+    client.deposit_asset(&user, &asset2, &200i128);
+
+    // Verify balances
+    assert_eq!(client.balance_of_asset(&user, &asset1), 100);
+    assert_eq!(client.balance_of_asset(&user, &asset2), 200);
+    
+    // Verify total deposits
+    assert_eq!(client.total_deposits_of_asset(&asset1), 100);
+    assert_eq!(client.total_deposits_of_asset(&asset2), 200);
+}
+
+/// Tests withdrawing from multiple assets.
+#[test]
+fn test_multiple_asset_withdrawals() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, VaultContract);
+    let client = VaultContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let deposit_token = Address::generate(&e);
+    let reward_token = Address::generate(&e);
+    let vesting_period = 86400u64;
+
+    client.initialize(&admin, &deposit_token, &reward_token, &vesting_period);
+
+    let asset1 = Address::generate(&e);
+    let asset2 = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    // Add assets
+    client.add_asset(&admin, &asset1);
+    client.add_asset(&admin, &asset2);
+
+    // Mock token balances
+    e.as_contract(&asset1, || {
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(user.clone()), &1000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(contract_id.clone()), &0i128);
+    });
+    e.as_contract(&asset2, || {
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(user.clone()), &2000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(contract_id.clone()), &0i128);
+    });
+
+    // Deposit assets
+    client.deposit_asset(&user, &asset1, &100i128);
+    client.deposit_asset(&user, &asset2, &200i128);
+
+    // Withdraw from asset1
+    client.withdraw_asset(&user, &asset1, &50i128);
+    
+    // Withdraw from asset2
+    client.withdraw_asset(&user, &asset2, &100i128);
+
+    // Verify balances
+    assert_eq!(client.balance_of_asset(&user, &asset1), 50);
+    assert_eq!(client.balance_of_asset(&user, &asset2), 100);
+    
+    // Verify total deposits
+    assert_eq!(client.total_deposits_of_asset(&asset1), 50);
+    assert_eq!(client.total_deposits_of_asset(&asset2), 100);
+}
+
+/// Tests reward distribution for a specific asset.
+#[test]
+fn test_asset_reward_distribution() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, VaultContract);
+    let client = VaultContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let deposit_token = Address::generate(&e);
+    let reward_token = Address::generate(&e);
+    let vesting_period = 86400u64;
+
+    client.initialize(&admin, &deposit_token, &reward_token, &vesting_period);
+
+    let asset1 = Address::generate(&e);
+    let user1 = Address::generate(&e);
+    let user2 = Address::generate(&e);
+
+    // Add asset
+    client.add_asset(&admin, &asset1);
+
+    // Mock token balances
+    e.as_contract(&asset1, || {
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(user1.clone()), &1000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(user2.clone()), &2000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(contract_id.clone()), &0i128);
+    });
+    e.as_contract(&reward_token, || {
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(admin.clone()), &1000000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(contract_id.clone()), &0i128);
+    });
+
+    // Users deposit
+    client.deposit_asset(&user1, &asset1, &300i128);
+    client.deposit_asset(&user2, &asset1, &600i128);
+
+    // Set timestamp
+    e.ledger().set_timestamp(1000);
+
+    // Distribute rewards
+    client.distribute_rewards_for_asset(&admin, &asset1, &900000i128);
+
+    // Check pending rewards (user1 should get 1/3, user2 should get 2/3)
+    let pending1 = client.pending_rewards_for_asset(&user1, &asset1);
+    let pending2 = client.pending_rewards_for_asset(&user2, &asset1);
+    
+    assert_eq!(pending1, 300000);
+    assert_eq!(pending2, 600000);
+}
+
+/// Tests claiming rewards for a specific asset.
+#[test]
+fn test_asset_reward_claiming() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, VaultContract);
+    let client = VaultContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let deposit_token = Address::generate(&e);
+    let reward_token = Address::generate(&e);
+    let vesting_period = 0u64; // No vesting for this test
+
+    client.initialize(&admin, &deposit_token, &reward_token, &vesting_period);
+
+    let asset1 = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    // Add asset
+    client.add_asset(&admin, &asset1);
+
+    // Mock token balances
+    e.as_contract(&asset1, || {
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(user.clone()), &1000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(contract_id.clone()), &0i128);
+    });
+    e.as_contract(&reward_token, || {
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(admin.clone()), &1000000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(contract_id.clone()), &0i128);
+    });
+
+    // User deposits
+    client.deposit_asset(&user, &asset1, &100i128);
+
+    // Distribute rewards
+    client.distribute_rewards_for_asset(&admin, &asset1, &200000i128);
+
+    // Claim rewards
+    let claimed = client.claim_rewards_for_asset(&user, &asset1);
+    assert_eq!(claimed, 200000);
+
+    // Verify rewards were claimed
+    let pending = client.pending_rewards_for_asset(&user, &asset1);
+    assert_eq!(pending, 0);
+}
+
+/// Tests independent tracking of balances per asset.
+#[test]
+fn test_independent_asset_tracking() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, VaultContract);
+    let client = VaultContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let deposit_token = Address::generate(&e);
+    let reward_token = Address::generate(&e);
+    let vesting_period = 0u64;
+
+    client.initialize(&admin, &deposit_token, &reward_token, &vesting_period);
+
+    let asset1 = Address::generate(&e);
+    let asset2 = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    // Add assets
+    client.add_asset(&admin, &asset1);
+    client.add_asset(&admin, &asset2);
+
+    // Mock token balances
+    e.as_contract(&asset1, || {
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(user.clone()), &10000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(contract_id.clone()), &0i128);
+    });
+    e.as_contract(&asset2, || {
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(user.clone()), &10000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(contract_id.clone()), &0i128);
+    });
+    e.as_contract(&reward_token, || {
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(admin.clone()), &2000000i128);
+        e.storage().instance().set(&soroban_sdk::token::DataKey::Balance(contract_id.clone()), &0i128);
+    });
+
+    // Deposit different amounts to each asset
+    client.deposit_asset(&user, &asset1, &100i128);
+    client.deposit_asset(&user, &asset2, &200i128);
+
+    // Distribute different reward amounts to each asset
+    client.distribute_rewards_for_asset(&admin, &asset1, &300000i128);
+    client.distribute_rewards_for_asset(&admin, &asset2, &600000i128);
+
+    // Check pending rewards are independent
+    let pending1 = client.pending_rewards_for_asset(&user, &asset1);
+    let pending2 = client.pending_rewards_for_asset(&user, &asset2);
+    
+    assert_eq!(pending1, 300000);
+    assert_eq!(pending2, 600000);
+
+    // Claim from asset1 only
+    let claimed1 = client.claim_rewards_for_asset(&user, &asset1);
+    assert_eq!(claimed1, 300000);
+
+    // Verify asset2 rewards are unchanged
+    let pending2_after = client.pending_rewards_for_asset(&user, &asset2);
+    assert_eq!(pending2_after, 600000);
+}
+
+/// Tests that unsupported asset operations fail.
+#[test]
+fn test_unsupported_asset_fails() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register_contract(None, VaultContract);
+    let client = VaultContractClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    let deposit_token = Address::generate(&e);
+    let reward_token = Address::generate(&e);
+    let vesting_period = 86400u64;
+
+    client.initialize(&admin, &deposit_token, &reward_token, &vesting_period);
+
+    let unsupported_asset = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    // Try to deposit unsupported asset
+    let result = client.try_deposit_asset(&user, &unsupported_asset, &100i128);
+    assert!(result.is_err());
+
+    // Verify asset is not supported
+    assert!(!client.is_asset_supported(&unsupported_asset));
+}

@@ -237,6 +237,146 @@ impl VaultContract {
 
         Ok(())
     }
+
+    // ---------------------------------------------------------------------------
+    // Multi-Asset Functions
+    // ---------------------------------------------------------------------------
+
+    pub fn add_asset(e: Env, admin: Address, asset: Address) -> Result<(), VaultError> {
+        storage::require_initialized(&e)?;
+        let stored_admin = storage::get_admin(&e)?;
+        if admin != stored_admin {
+            return Err(AuthorizationError::Unauthorized.into());
+        }
+        admin.require_auth();
+
+        storage::add_supported_asset(&e, &asset)?;
+        events::emit_asset_added(&e, asset);
+        Ok(())
+    }
+
+    pub fn deposit_asset(e: Env, from: Address, asset: Address, amount: i128) -> Result<(), VaultError> {
+        storage::require_not_paused(&e)?;
+        storage::require_initialized(&e)?;
+        validate_positive_amount(amount)?;
+        from.require_auth();
+
+        if !storage::is_asset_supported(&e, &asset) {
+            return Err(ValidationError::InvalidAddress.into());
+        }
+
+        with_non_reentrant(&e, || {
+            let token = soroban_sdk::token::Client::new(&e, &asset);
+            token.transfer(&from, &e.current_contract_address(), &amount);
+
+            let _position = storage::store_asset_deposit(&e, &from, &asset, amount)?;
+            events::emit_asset_deposit(&e, from.clone(), asset.clone(), amount);
+            Ok(())
+        })
+    }
+
+    pub fn withdraw_asset(e: Env, to: Address, asset: Address, amount: i128) -> Result<(), VaultError> {
+        storage::require_not_paused(&e)?;
+        storage::require_initialized(&e)?;
+        validate_positive_amount(amount)?;
+        to.require_auth();
+
+        if !storage::is_asset_supported(&e, &asset) {
+            return Err(ValidationError::InvalidAddress.into());
+        }
+
+        with_non_reentrant(&e, || {
+            let token = soroban_sdk::token::Client::new(&e, &asset);
+            let position = storage::store_asset_withdraw(&e, &to, &asset, amount)?;
+
+            events::emit_asset_withdraw(&e, to.clone(), asset.clone(), amount, position.balance);
+
+            token.transfer(&e.current_contract_address(), &to, &amount);
+
+            Ok(())
+        })
+    }
+
+    pub fn distribute_rewards_for_asset(e: Env, admin: Address, asset: Address, amount: i128) -> Result<i128, VaultError> {
+        storage::require_initialized(&e)?;
+        validate_positive_amount(amount)?;
+
+        const MIN_REWARD_DISTRIBUTION: i128 = 100_000;
+        if amount < MIN_REWARD_DISTRIBUTION {
+            return Err(ValidationError::InsufficientRewardAmount.into());
+        }
+
+        if !storage::is_asset_supported(&e, &asset) {
+            return Err(ValidationError::InvalidAddress.into());
+        }
+
+        let state = storage::get_state(&e)?;
+        let stored_admin = state.admin.clone();
+        if admin != stored_admin {
+            return Err(AuthorizationError::Unauthorized.into());
+        }
+
+        let reward_token_id = state.reward_token.clone();
+        admin.require_auth();
+
+        with_non_reentrant(&e, || {
+            let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
+            reward_token.transfer(&admin, &e.current_contract_address(), &amount);
+
+            let next_reward_index = storage::store_asset_reward_distribution(&e, &asset, amount)?;
+            events::emit_asset_distribute(&e, admin.clone(), asset.clone(), amount);
+            Ok(next_reward_index)
+        })
+    }
+
+    pub fn claim_rewards_for_asset(e: Env, user: Address, asset: Address) -> Result<i128, VaultError> {
+        storage::require_not_paused(&e)?;
+        storage::require_initialized(&e)?;
+        user.require_auth();
+
+        if !storage::is_asset_supported(&e, &asset) {
+            return Err(ValidationError::InvalidAddress.into());
+        }
+
+        with_non_reentrant(&e, || {
+            let amt = storage::store_asset_claimable_rewards(&e, &user, &asset)?;
+            if amt <= 0 {
+                return Ok(0);
+            }
+
+            let reward_token_id = storage::get_reward_token(&e)?;
+            let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
+            ensure_contract_balance(reward_token.balance(&e.current_contract_address()), amt)?;
+            reward_token.transfer(&e.current_contract_address(), &user, &amt);
+
+            events::emit_asset_claim_rewards(&e, user, asset, amt);
+            Ok(amt)
+        })
+    }
+
+    pub fn balance_of_asset(e: Env, user: Address, asset: Address) -> Result<i128, VaultError> {
+        storage::get_user_asset_balance(&e, &user, &asset)
+    }
+
+    pub fn total_deposits_of_asset(e: Env, asset: Address) -> Result<i128, VaultError> {
+        storage::get_asset_total_deposits(&e, &asset)
+    }
+
+    pub fn reward_index_of_asset(e: Env, asset: Address) -> Result<i128, VaultError> {
+        storage::get_asset_reward_index(&e, &asset)
+    }
+
+    pub fn pending_rewards_for_asset(e: Env, user: Address, asset: Address) -> Result<i128, VaultError> {
+        storage::pending_user_asset_rewards_view(&e, &user, &asset)
+    }
+
+    pub fn vested_rewards_for_asset(e: Env, user: Address, asset: Address) -> Result<i128, VaultError> {
+        storage::vested_user_asset_rewards_view(&e, &user, &asset)
+    }
+
+    pub fn is_asset_supported(e: Env, asset: Address) -> bool {
+        storage::is_asset_supported(&e, &asset)
+    }
 }
 
 fn validate_positive_amount(amount: i128) -> Result<(), VaultError> {
