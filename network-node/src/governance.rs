@@ -1,5 +1,5 @@
 use crate::chain_params::{
-    normalize_id, ChainParameterRegistry, GovernanceConfig, NetworkParametersPatch,
+    normalize_id, ChainParameterRegistry, GovernanceConfig, NetworkParametersPatch, Role,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -63,7 +63,13 @@ impl GovernanceService {
         patch: NetworkParametersPatch,
         activation_height: u64,
         current_height: u64,
-    ) -> String {
+        registry: &ChainParameterRegistry,
+    ) -> Result<String, String> {
+        // Ensure proposer has Operator or Admin role to submit proposals
+        registry
+            .check_role(&proposer, Role::Operator)
+            .map_err(|e| format!("Proposer unauthorized: {}", e))?;
+
         let id = uuid::Uuid::new_v4().to_string();
         let proposal = Proposal {
             id: id.clone(),
@@ -77,7 +83,7 @@ impl GovernanceService {
 
         self.proposals.insert(id.clone(), proposal);
         info!(proposal_id = %id, proposer = %proposer, "New governance proposal submitted");
-        id
+        Ok(id)
     }
 
     /// Casts a vote on an active proposal.
@@ -87,7 +93,13 @@ impl GovernanceService {
         proposal_id: &str,
         voter: String,
         approve: bool,
+        registry: &ChainParameterRegistry,
     ) -> Result<(), String> {
+        // Ensure voter has at least Operator role to participate in governance voting
+        registry
+            .check_role(&voter, Role::Operator)
+            .map_err(|e| format!("Voter unauthorized: {}", e))?;
+
         let proposal = self
             .proposals
             .get_mut(proposal_id)
