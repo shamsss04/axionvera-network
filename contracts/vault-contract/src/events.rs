@@ -8,6 +8,8 @@ const ACT_DISTRIBUTE: Symbol = symbol_short!("Distribute");
 const ACT_CLAIM: Symbol = symbol_short!("Claim");
 const EVT_ADMIN_PROPOSED: Symbol = symbol_short!("AdminProp");
 const EVT_ADMIN_ACCEPTED: Symbol = symbol_short!("AdminAcpt");
+const ACT_LOCK: Symbol = symbol_short!("Lock");
+const ACT_UNLOCK: Symbol = symbol_short!("Unlock");
 const EVT_UPGRADE: Symbol = symbol_short!("Upgrade");
 const EVT_ASSET_ADDED: Symbol = symbol_short!("AssetAdd");
 const ACT_ASSET_DEPOSIT: Symbol = symbol_short!("AssetDep");
@@ -132,6 +134,29 @@ pub fn emit_initialize(e: &Env, admin: Address, deposit_token: Address, reward_t
             admin,
             deposit_token,
             reward_token,
+            timestamp: e.ledger().timestamp(),
+        },
+    );
+}
+
+pub fn emit_lock(e: &Env, user: Address, amount: i128, unlock_timestamp: u64) {
+    e.events().publish(
+        (PROTOCOL, ACT_LOCK),
+        LockEvent {
+            user,
+            amount,
+            unlock_timestamp,
+            timestamp: e.ledger().timestamp(),
+        },
+    );
+}
+
+pub fn emit_unlock(e: &Env, user: Address, amount: i128) {
+    e.events().publish(
+        (PROTOCOL, ACT_UNLOCK),
+        UnlockEvent {
+            user,
+            amount,
             timestamp: e.ledger().timestamp(),
         },
     );

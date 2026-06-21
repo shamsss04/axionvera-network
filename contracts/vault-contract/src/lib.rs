@@ -1,11 +1,10 @@
 #![no_std]
 
 pub mod errors;
-mod events;
-mod storage;
-
 #[cfg(test)]
 mod test;
+mod events;
+mod storage;
 
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env};
 
@@ -26,6 +25,8 @@ impl VaultContract {
         deposit_token: Address,
         reward_token: Address,
         vesting_period: u64,
+        target_deposits: i128,
+        utilization_multipliers: soroban_sdk::Vec<storage::MultiplierPoint>,
     ) -> Result<(), VaultError> {
         storage::require_not_paused(&e)?;
         if storage::is_initialized(&e) {
@@ -33,30 +34,32 @@ impl VaultContract {
         }
 
         validate_distinct_token_addresses(&deposit_token, &reward_token)?;
-        
+        validate_utilization_multipliers(&utilization_multipliers)?;
+
         admin.require_auth();
 
-        storage::initialize_state(&e, &admin, &deposit_token, &reward_token, vesting_period);
+        storage::initialize_state(
+            &e,
+            &admin,
+            &deposit_token,
+            &reward_token,
+            vesting_period,
+            target_deposits,
+            &utilization_multipliers,
+        );
         events::emit_initialize(&e, admin, deposit_token, reward_token);
 
         Ok(())
     }
 
-    pub fn propose_new_admin(
-        e: Env,
-        current_admin: Address,
-        new_admin: Address,
-    ) -> Result<(), VaultError> {
+    pub fn propose_new_admin(e: Env, new_admin: Address) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
 
-        let configured_admin = storage::get_admin(&e)?;
-        if current_admin != configured_admin {
-            return Err(AuthorizationError::Unauthorized.into());
-        }
+        let admin = storage::get_admin(&e)?;
+        admin.require_auth();
 
-        current_admin.require_auth();
         storage::set_pending_admin(&e, &new_admin);
-        events::emit_admin_transfer_proposed(&e, current_admin, new_admin);
+        events::emit_admin_transfer_proposed(&e, admin, new_admin);
 
         Ok(())
     }
@@ -140,6 +143,52 @@ impl VaultContract {
         })
     }
 
+    pub fn lock(
+        e: Env,
+        from: Address,
+        amount: i128,
+        duration_seconds: u64,
+    ) -> Result<(), VaultError> {
+        storage::require_not_paused(&e)?;
+        storage::require_initialized(&e)?;
+        validate_positive_amount(amount)?;
+        if duration_seconds == 0 {
+            return Err(ValidationError::InvalidLockDuration.into());
+        }
+        from.require_auth();
+
+        with_non_reentrant(&e, || {
+            let unlock_timestamp = e
+                .ledger()
+                .timestamp()
+                .checked_add(duration_seconds)
+                .ok_or(VaultError::MathOverflow)?;
+            storage::store_lock(&e, &from, amount, duration_seconds)?;
+            events::emit_lock(&e, from, amount, unlock_timestamp);
+            Ok(())
+        })
+    }
+
+    pub fn unlock_expired(e: Env, user: Address, limit: u32) -> Result<i128, VaultError> {
+        storage::require_not_paused(&e)?;
+        storage::require_initialized(&e)?;
+        user.require_auth();
+
+        // Enforce a maximum limit to prevent budget exhaustion in a single call.
+        const MAX_UNLOCK_LIMIT: u32 = 50;
+        if limit > MAX_UNLOCK_LIMIT {
+            return Err(VaultError::OperationLimitExceeded);
+        }
+
+        with_non_reentrant(&e, || {
+            let unlocked_amount = storage::unlock_expired_locks(&e, &user, limit)?;
+            if unlocked_amount > 0 {
+                events::emit_unlock(&e, user, unlocked_amount);
+            }
+            Ok(unlocked_amount)
+        })
+    }
+
     pub fn claim_rewards(e: Env, user: Address) -> Result<i128, VaultError> {
         storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
@@ -163,6 +212,14 @@ impl VaultContract {
 
     pub fn balance(e: Env, user: Address) -> Result<i128, VaultError> {
         storage::get_user_balance(&e, &user)
+    }
+
+    pub fn liquid_balance(e: Env, user: Address) -> Result<i128, VaultError> {
+        storage::get_liquid_balance(&e, &user)
+    }
+
+    pub fn locked_balance(e: Env, user: Address) -> Result<i128, VaultError> {
+        storage::get_locked_balance(&e, &user)
     }
 
     pub fn total_deposits(e: Env) -> Result<i128, VaultError> {
@@ -201,36 +258,26 @@ impl VaultContract {
         storage::get_reward_token(&e)
     }
 
-    pub fn pause_contract(e: Env, admin: Address) -> Result<(), VaultError> {
+    pub fn pause_contract(e: Env) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
-        let current_admin = storage::get_admin(&e)?;
-        if current_admin != admin {
-            return Err(VaultError::Unauthorized);
-        }
+        let admin = storage::get_admin(&e)?;
         admin.require_auth();
         storage::set_paused(&e, true);
         Ok(())
     }
 
-    pub fn unpause_contract(e: Env, admin: Address) -> Result<(), VaultError> {
+    pub fn unpause_contract(e: Env) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
-        let current_admin = storage::get_admin(&e)?;
-        if current_admin != admin {
-            return Err(VaultError::Unauthorized);
-        }
+        let admin = storage::get_admin(&e)?;
         admin.require_auth();
         storage::set_paused(&e, false);
         Ok(())
     }
 
-    pub fn upgrade(e: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), VaultError> {
+    pub fn upgrade(e: Env, new_wasm_hash: BytesN<32>) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
+        let admin = storage::get_admin(&e)?;
         admin.require_auth();
-
-        let stored_admin = storage::get_admin(&e)?;
-        if admin != stored_admin {
-            return Err(VaultError::UpgradeFailed);
-        }
 
         e.deployer().update_current_contract_wasm(new_wasm_hash.clone());
         events::emit_upgrade(&e, admin, new_wasm_hash);
@@ -396,6 +443,25 @@ fn validate_distinct_token_addresses(
     if deposit_token == reward_token {
         return Err(ValidationError::InvalidTokenConfiguration.into());
     }
+    Ok(())
+}
+
+fn validate_utilization_multipliers(
+    multipliers: &soroban_sdk::Vec<storage::MultiplierPoint>,
+) -> Result<(), VaultError> {
+    if multipliers.is_empty() {
+        return Ok(()); // An empty list is valid, which causes rewards to default to 1.0x.
+    }
+
+    let mut last_util_bps = 0;
+    for point in multipliers.iter() {
+        if point.utilization_bps < last_util_bps {
+            // The list must be sorted by utilization_bps in ascending order.
+            return Err(ValidationError::InvalidUtilizationParameters.into());
+        }
+        last_util_bps = point.utilization_bps;
+    }
+
     Ok(())
 }
 

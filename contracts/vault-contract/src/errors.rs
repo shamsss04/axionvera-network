@@ -49,6 +49,10 @@ pub enum ValidationError {
     /// Thrown when token addresses (deposit/reward) are misconfigured (e.g., identical).
     InvalidTokenConfiguration,
     InsufficientRewardAmount,
+    /// Thrown when a lock duration is zero.
+    InvalidLockDuration,
+    /// Thrown when utilization parameters are invalid (e.g., not sorted).
+    InvalidUtilizationParameters,
 }
 
 /// Specific errors related to balance checks.
@@ -88,6 +92,8 @@ pub enum AuthorizationError {
     /// Thrown when a reentrant call is detected by the guard.
     ReentrancyDetected,
     UpgradeFailed,
+    /// Thrown when an operation would exceed the budget (e.g., too many locks to process).
+    OperationLimitExceeded,
 }
 
 /// The primary error type for the Vault contract.
@@ -132,6 +138,14 @@ pub enum VaultError {
     RewardsNotVested = 17,
     /// Reward distribution amount is too small
     InsufficientRewardAmount = 18,
+    /// Lock duration must be greater than zero
+    InvalidLockDuration = 19,
+    /// Contract upgrade failed
+    UpgradeFailed = 20,
+    /// The operation would exceed the per-transaction budget limit
+    OperationLimitExceeded = 21,
+    /// Utilization parameters are invalid (e.g., not sorted)
+    InvalidUtilizationParameters = 22,
 }
 
 impl VaultError {
@@ -209,6 +223,22 @@ impl VaultError {
                 category: ErrorCategory::Validation,
                 message: "reward distribution amount is too small",
             },
+            Self::InvalidLockDuration => ErrorInfo {
+                category: ErrorCategory::Validation,
+                message: "lock duration must be greater than zero",
+            },
+            Self::UpgradeFailed => ErrorInfo {
+                category: ErrorCategory::Authorization,
+                message: "contract upgrade failed",
+            },
+            Self::OperationLimitExceeded => ErrorInfo {
+                category: ErrorCategory::State,
+                message: "operation would exceed the per-transaction budget limit",
+            },
+            Self::InvalidUtilizationParameters => ErrorInfo {
+                category: ErrorCategory::Validation,
+                message: "utilization parameters are invalid (e.g., not sorted)",
+            },
         }
     }
 
@@ -253,6 +283,8 @@ impl From<ValidationError> for VaultError {
             ValidationError::InvalidAddress => Self::InvalidAddress,
             ValidationError::InvalidTokenConfiguration => Self::InvalidTokenConfiguration,
             ValidationError::InsufficientRewardAmount => Self::InsufficientRewardAmount,
+            ValidationError::InvalidLockDuration => Self::InvalidLockDuration,
+            ValidationError::InvalidUtilizationParameters => Self::InvalidUtilizationParameters,
         }
     }
 }
@@ -283,6 +315,7 @@ impl From<AuthorizationError> for VaultError {
             AuthorizationError::Unauthorized => Self::Unauthorized,
             AuthorizationError::ReentrancyDetected => Self::ReentrancyDetected,
             AuthorizationError::UpgradeFailed => Self::UpgradeFailed,
+            AuthorizationError::OperationLimitExceeded => Self::OperationLimitExceeded,
         }
     }
 }
