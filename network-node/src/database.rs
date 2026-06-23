@@ -69,22 +69,44 @@ impl ConnectionPool {
         .await
         .map_err(|e| crate::error::NetworkError::Database(DatabaseError::QueryFailed(e.to_string())))?;
 
-        // Create transactions table with composite unique constraint
+        // Create events table (standardized, query-friendly)
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS transactions (
+            "CREATE TABLE IF NOT EXISTS events (
                 id SERIAL PRIMARY KEY,
-                transaction_hash TEXT NOT NULL,
-                event_index INTEGER NOT NULL,
+                event_id TEXT NOT NULL UNIQUE,
                 ledger_sequence INTEGER NOT NULL,
+                contract_id TEXT NOT NULL,
                 event_type TEXT NOT NULL,
+                protocol TEXT,
+                action TEXT,
+                user_address TEXT,
+                asset_address TEXT,
+                amount NUMERIC,
+                timestamp BIGINT,
                 data JSONB NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(transaction_hash, event_index)
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             )"
         )
         .execute(&self.pool)
         .await
         .map_err(|e| crate::error::NetworkError::Database(DatabaseError::QueryFailed(e.to_string())))?;
+
+        // Create indexes for query performance
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_ledger ON events (ledger_sequence)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_type ON events (event_type)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_user ON events (user_address)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_asset ON events (asset_address)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp)")
+            .execute(&self.pool)
+            .await?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS deposits (
@@ -132,5 +154,100 @@ impl ConnectionPool {
                 Ok(false)
             }
         }
+    }
+
+    /// Insert an event into the events table
+    pub async fn insert_event(
+        &self,
+        event_id: &str,
+        ledger_sequence: u32,
+        contract_id: &str,
+        event_type: &str,
+        protocol: Option<&str>,
+        action: Option<&str>,
+        user_address: Option<&str>,
+        asset_address: Option<&str>,
+        amount: Option<f64>,
+        timestamp: Option<i64>,
+        data: serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO events 
+             (event_id, ledger_sequence, contract_id, event_type, protocol, action, user_address, asset_address, amount, timestamp, data)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             ON CONFLICT (event_id) DO NOTHING"
+        )
+        .bind(event_id)
+        .bind(ledger_sequence as i32)
+        .bind(contract_id)
+        .bind(event_type)
+        .bind(protocol)
+        .bind(action)
+        .bind(user_address)
+        .bind(asset_address)
+        .bind(amount)
+        .bind(timestamp)
+        .bind(data)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| crate::error::NetworkError::Database(DatabaseError::QueryFailed(e.to_string())))?;
+        Ok(())
+    }
+
+    /// Get events by user address
+    pub async fn get_events_by_user(
+        &self,
+        user_address: &str,
+        limit: i32,
+        offset: i32,
+    ) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            "SELECT data FROM events WHERE user_address = $1 ORDER BY timestamp DESC LIMIT $2 OFFSET $3"
+        )
+        .bind(user_address)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| crate::error::NetworkError::Database(DatabaseError::QueryFailed(e.to_string())))?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
+    }
+
+    /// Get all events with pagination
+    pub async fn get_all_events(
+        &self,
+        limit: i32,
+        offset: i32,
+    ) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            "SELECT data FROM events ORDER BY timestamp DESC LIMIT $1 OFFSET $2"
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| crate::error::NetworkError::Database(DatabaseError::QueryFailed(e.to_string())))?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
+    }
+
+    /// Update last processed ledger
+    pub async fn update_last_processed_ledger(&self, ledger: u32) -> Result<()> {
+        sqlx::query(
+            "UPDATE indexer_state SET last_processed_ledger = $1, updated_at = CURRENT_TIMESTAMP WHERE id = 1"
+        )
+        .bind(ledger as i32)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| crate::error::NetworkError::Database(DatabaseError::QueryFailed(e.to_string())))?;
+        Ok(())
+    }
+
+    /// Get last processed ledger
+    pub async fn get_last_processed_ledger(&self) -> Result<u32> {
+        let row: (i32,) = sqlx::query_as("SELECT last_processed_ledger FROM indexer_state WHERE id = 1")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| crate::error::NetworkError::Database(DatabaseError::QueryFailed(e.to_string())))?;
+        Ok(row.0 as u32)
     }
 }

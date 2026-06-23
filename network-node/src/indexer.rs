@@ -82,11 +82,8 @@ impl EventIndexer {
             self.contract_id
         );
 
-        // Keep these dependencies initialized and available as the indexer evolves.
-        let _ = (&self.stellar_service, &self.connection_pool);
-
         let mut interval = time::interval(Duration::from_secs(self.polling_interval_secs));
-        let mut current_ledger: u32 = 0;
+        let mut current_ledger = self.connection_pool.get_last_processed_ledger().await?;
 
         loop {
             tokio::select! {
@@ -100,7 +97,7 @@ impl EventIndexer {
             let filter = EventFilter {
                 event_type: "contract".to_string(),
                 contract_ids: vec![self.contract_id.clone()],
-                topics: vec![vec!["AxionveraVault".to_string()]],
+                topics: vec![vec!["AxionVault".to_string()]],
             };
 
             let params = GetEventsParams {
@@ -118,12 +115,40 @@ impl EventIndexer {
                         info!(
                             event_id = %event.id,
                             ledger = event.ledger,
-                            "Parsed AxionveraVault Soroban event"
+                            "Processing AxionVault Soroban event"
                         );
-                        debug!(xdr = %event.value.xdr, "Event XDR payload");
+
+                        let protocol = event.topic.get(0).cloned();
+                        let action = event.topic.get(1).cloned();
+                        
+                        // For now, store the raw event as JSON
+                        let event_json = serde_json::json!({
+                            "id": event.id,
+                            "ledger": event.ledger,
+                            "contract_id": event.contract_id,
+                            "topic": event.topic,
+                            "value": event.value
+                        });
+
+                        self.connection_pool
+                            .insert_event(
+                                &event.id,
+                                event.ledger,
+                                &event.contract_id,
+                                &event.event_type,
+                                protocol.as_deref(),
+                                action.as_deref(),
+                                None,
+                                None,
+                                None,
+                                None,
+                                event_json,
+                            )
+                            .await?;
                     }
 
                     current_ledger = events_result.latest_ledger + 1;
+                    self.connection_pool.update_last_processed_ledger(current_ledger).await?;
                 }
                 Err(e) => {
                     error!(error = %e, "Failed to fetch Soroban events");

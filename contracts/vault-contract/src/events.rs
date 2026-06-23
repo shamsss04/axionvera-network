@@ -127,6 +127,23 @@ pub struct AssetClaimEvent {
     pub timestamp: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LockEvent {
+    pub user: Address,
+    pub amount: i128,
+    pub unlock_timestamp: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnlockEvent {
+    pub user: Address,
+    pub amount: i128,
+    pub timestamp: u64,
+}
+
 pub fn emit_initialize(e: &Env, admin: Address, deposit_token: Address, reward_token: Address) {
     e.events().publish(
         (PROTOCOL, ACT_INIT),
