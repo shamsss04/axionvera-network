@@ -475,3 +475,26 @@ fn test_unsupported_asset_fails() {
     // Verify asset is not supported
     assert!(!client.is_asset_supported(&unsupported_asset));
 }
+
+// ---------------------------------------------------------------------------
+// Cross-Contract Interaction Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_cross_contract_client_validate_contract() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, VaultContract);
+    let other_address = Address::generate(&e);
+
+    // Test that self-contract validation fails
+    e.as_contract(&contract_id, || {
+        let result = crate::cross_contract::CrossContractClient::validate_contract_exists(&e, &contract_id);
+        assert!(result.is_err());
+    });
+
+    // Test that other contract validation passes
+    e.as_contract(&contract_id, || {
+        let result = crate::cross_contract::CrossContractClient::validate_contract_exists(&e, &other_address);
+        assert!(result.is_ok());
+    });
+}

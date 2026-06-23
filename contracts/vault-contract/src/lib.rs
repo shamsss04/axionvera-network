@@ -5,10 +5,12 @@ pub mod errors;
 mod test;
 mod events;
 mod storage;
+pub mod cross_contract;
 
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env};
 
 use crate::errors::{AuthorizationError, BalanceError, StateError, ValidationError, VaultError};
+use crate::cross_contract::CrossContractClient;
 
 #[contract]
 pub struct VaultContract;
@@ -90,8 +92,13 @@ impl VaultContract {
 
         with_non_reentrant(&e, || {
             let state = storage::get_state(&e)?;
-            let token = soroban_sdk::token::Client::new(&e, &state.deposit_token);
-            token.transfer(&from, &e.current_contract_address(), &amount);
+            CrossContractClient::token_transfer(
+                &e,
+                &state.deposit_token,
+                &from,
+                &e.current_contract_address(),
+                amount,
+            )?;
 
             let (_state, _position) = storage::store_deposit(&e, &from, amount)?;
             events::emit_deposit(&e, from.clone(), amount);
@@ -107,12 +114,17 @@ impl VaultContract {
 
         with_non_reentrant(&e, || {
             let state = storage::get_state(&e)?;
-            let token = soroban_sdk::token::Client::new(&e, &state.deposit_token);
             let (state, position) = storage::store_withdraw(&e, &to, amount)?;
 
             events::emit_withdraw(&e, to.clone(), amount, position.balance);
 
-            token.transfer(&e.current_contract_address(), &to, &amount);
+            CrossContractClient::token_transfer(
+                &e,
+                &state.deposit_token,
+                &e.current_contract_address(),
+                &to,
+                amount,
+            )?;
 
             Ok(())
         })
@@ -134,8 +146,13 @@ impl VaultContract {
         admin.require_auth();
 
         with_non_reentrant(&e, || {
-            let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
-            reward_token.transfer(&admin, &e.current_contract_address(), &amount);
+            CrossContractClient::token_transfer(
+                &e,
+                &reward_token_id,
+                &admin,
+                &e.current_contract_address(),
+                amount,
+            )?;
 
             let next_state = storage::store_reward_distribution(&e, amount)?;
             events::emit_distribute(&e, admin.clone(), amount);
@@ -201,9 +218,19 @@ impl VaultContract {
             }
 
             let reward_token_id = storage::get_reward_token(&e)?;
-            let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
-            ensure_contract_balance(reward_token.balance(&e.current_contract_address()), amt)?;
-            reward_token.transfer(&e.current_contract_address(), &user, &amt);
+            let contract_balance = CrossContractClient::token_balance(
+                &e,
+                &reward_token_id,
+                &e.current_contract_address(),
+            )?;
+            ensure_contract_balance(contract_balance, amt)?;
+            CrossContractClient::token_transfer(
+                &e,
+                &reward_token_id,
+                &e.current_contract_address(),
+                &user,
+                amt,
+            )?;
 
             events::emit_claim_rewards(&e, user, amt);
             Ok(amt)
@@ -313,8 +340,13 @@ impl VaultContract {
         }
 
         with_non_reentrant(&e, || {
-            let token = soroban_sdk::token::Client::new(&e, &asset);
-            token.transfer(&from, &e.current_contract_address(), &amount);
+            CrossContractClient::token_transfer(
+                &e,
+                &asset,
+                &from,
+                &e.current_contract_address(),
+                amount,
+            )?;
 
             let _position = storage::store_asset_deposit(&e, &from, &asset, amount)?;
             events::emit_asset_deposit(&e, from.clone(), asset.clone(), amount);
@@ -333,12 +365,17 @@ impl VaultContract {
         }
 
         with_non_reentrant(&e, || {
-            let token = soroban_sdk::token::Client::new(&e, &asset);
             let position = storage::store_asset_withdraw(&e, &to, &asset, amount)?;
 
             events::emit_asset_withdraw(&e, to.clone(), asset.clone(), amount, position.balance);
 
-            token.transfer(&e.current_contract_address(), &to, &amount);
+            CrossContractClient::token_transfer(
+                &e,
+                &asset,
+                &e.current_contract_address(),
+                &to,
+                amount,
+            )?;
 
             Ok(())
         })
@@ -367,8 +404,13 @@ impl VaultContract {
         admin.require_auth();
 
         with_non_reentrant(&e, || {
-            let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
-            reward_token.transfer(&admin, &e.current_contract_address(), &amount);
+            CrossContractClient::token_transfer(
+                &e,
+                &reward_token_id,
+                &admin,
+                &e.current_contract_address(),
+                amount,
+            )?;
 
             let next_reward_index = storage::store_asset_reward_distribution(&e, &asset, amount)?;
             events::emit_asset_distribute(&e, admin.clone(), asset.clone(), amount);
@@ -392,9 +434,19 @@ impl VaultContract {
             }
 
             let reward_token_id = storage::get_reward_token(&e)?;
-            let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
-            ensure_contract_balance(reward_token.balance(&e.current_contract_address()), amt)?;
-            reward_token.transfer(&e.current_contract_address(), &user, &amt);
+            let contract_balance = CrossContractClient::token_balance(
+                &e,
+                &reward_token_id,
+                &e.current_contract_address(),
+            )?;
+            ensure_contract_balance(contract_balance, amt)?;
+            CrossContractClient::token_transfer(
+                &e,
+                &reward_token_id,
+                &e.current_contract_address(),
+                &user,
+                amt,
+            )?;
 
             events::emit_asset_claim_rewards(&e, user, asset, amt);
             Ok(amt)

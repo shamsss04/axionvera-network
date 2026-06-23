@@ -146,6 +146,8 @@ pub enum VaultError {
     OperationLimitExceeded = 21,
     /// Utilization parameters are invalid (e.g., not sorted)
     InvalidUtilizationParameters = 22,
+    /// Cross-contract call failed
+    CrossContractCallFailed = 23,
 }
 
 impl VaultError {
@@ -238,6 +240,10 @@ impl VaultError {
             Self::InvalidUtilizationParameters => ErrorInfo {
                 category: ErrorCategory::Validation,
                 message: "utilization parameters are invalid (e.g., not sorted)",
+            },
+            Self::CrossContractCallFailed => ErrorInfo {
+                category: ErrorCategory::State,
+                message: "cross-contract call failed",
             },
         }
     }
