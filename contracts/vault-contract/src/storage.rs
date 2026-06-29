@@ -75,10 +75,6 @@ pub enum DataKey {
     UserAccruedRewards(Address),
     /// User's last reward distribution timestamp (legacy, kept for backwards compatibility)
     UserLastRewardTimestamp(Address),
-    /// User's liquid balance (available for immediate withdrawal)
-    UserLiquidBalance(Address),
-    /// User's active lock entries
-    UserLocks(Address),
     /// Penalty rate in basis points for early withdrawals
     PenaltyRateBps,
     /// Total penalty amount collected by the vault
@@ -139,36 +135,6 @@ pub struct UserPosition {
     pub accrued_rewards: i128,
     /// The timestamp of the last reward distribution affecting this user.
     pub last_reward_timestamp: u64,
-}
-
-/// A single time-locked deposit entry.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Lock {
-    /// The amount locked in this entry.
-    pub amount: i128,
-    /// The earliest timestamp when these funds may be unlocked without penalty.
-    pub unlock_timestamp: u64,
-    /// A placeholder for future locked-reward multiplier support.
-    pub reward_multiplier: u32,
-}
-
-/// A reward multiplier entry used to compute dynamic reward curves.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MultiplierPoint {
-    /// Utilization threshold in basis points.
-    pub utilization_bps: u32,
-    /// Reward multiplier in basis points.
-    pub multiplier_bps: u32,
-}
-
-/// Snapshot of a user's position across multiple assets.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MultiAssetPosition {
-    /// Map of asset address to user position
-    pub positions: Map<Address, UserPosition>,
 }
 
 /// A helper struct for returning reward information in view functions.
@@ -325,7 +291,14 @@ pub fn get_state(e: &Env) -> Result<VaultState, VaultError> {
 }
 
 pub fn get_admin(e: &Env) -> Result<Address, VaultError> {
-    Ok(get_state(e)?.admin)
+    require_initialized(e)?;
+    let admin = e
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(StateError::InvalidState)?;
+    bump_instance_ttl(e);
+    Ok(admin)
 }
 
 pub fn set_admin(e: &Env, admin: &Address) {
@@ -353,15 +326,36 @@ pub fn clear_pending_admin(e: &Env) {
 }
 
 pub fn get_deposit_token(e: &Env) -> Result<Address, VaultError> {
-    Ok(get_state(e)?.deposit_token)
+    require_initialized(e)?;
+    let deposit_token = e
+        .storage()
+        .instance()
+        .get(&DataKey::DepositToken)
+        .ok_or(StateError::InvalidState)?;
+    bump_instance_ttl(e);
+    Ok(deposit_token)
 }
 
 pub fn get_reward_token(e: &Env) -> Result<Address, VaultError> {
-    Ok(get_state(e)?.reward_token)
+    require_initialized(e)?;
+    let reward_token = e
+        .storage()
+        .instance()
+        .get(&DataKey::RewardToken)
+        .ok_or(StateError::InvalidState)?;
+    bump_instance_ttl(e);
+    Ok(reward_token)
 }
 
 pub fn get_total_deposits(e: &Env) -> Result<i128, VaultError> {
-    Ok(get_state(e)?.total_deposits)
+    require_initialized(e)?;
+    let total = e
+        .storage()
+        .instance()
+        .get(&DataKey::TotalDeposits)
+        .unwrap_or(0_i128);
+    bump_instance_ttl(e);
+    Ok(total)
 }
 
 pub fn set_total_deposits(e: &Env, total: i128) {
@@ -370,7 +364,14 @@ pub fn set_total_deposits(e: &Env, total: i128) {
 }
 
 pub fn get_reward_index(e: &Env) -> Result<i128, VaultError> {
-    Ok(get_state(e)?.reward_index)
+    require_initialized(e)?;
+    let index = e
+        .storage()
+        .instance()
+        .get(&DataKey::RewardIndex)
+        .unwrap_or(0_i128);
+    bump_instance_ttl(e);
+    Ok(index)
 }
 
 pub fn set_reward_index(e: &Env, index: i128) {
@@ -379,7 +380,14 @@ pub fn set_reward_index(e: &Env, index: i128) {
 }
 
 pub fn get_vesting_period(e: &Env) -> Result<u64, VaultError> {
-    Ok(get_state(e)?.vesting_period)
+    require_initialized(e)?;
+    let period = e
+        .storage()
+        .instance()
+        .get(&DataKey::VestingPeriod)
+        .unwrap_or(0_u64);
+    bump_instance_ttl(e);
+    Ok(period)
 }
 
 pub fn set_paused(e: &Env, paused: bool) {
@@ -1426,7 +1434,7 @@ pub fn store_asset_claimable_rewards(
         return Err(ValidationError::InvalidAddress.into());
     }
 
-    let state = get_state(e)?;
+    let vesting_period = get_vesting_period(e)?;
     let mut position = get_user_asset_position_unchecked(e, user, asset);
     let asset_reward_index = get_asset_reward_index(e, asset)?;
 
@@ -1435,7 +1443,7 @@ pub fn store_asset_claimable_rewards(
 
     // Calculate vested rewards
     let current_timestamp = e.ledger().timestamp();
-    let vested = calculate_vested_rewards(current_timestamp, &position, state.vesting_period)?;
+    let vested = calculate_vested_rewards(current_timestamp, &position, vesting_period)?;
 
     // Update position with remaining accrued rewards
     position.accrued_rewards = position
@@ -1459,7 +1467,7 @@ pub fn preview_user_asset_rewards(
         return Err(ValidationError::InvalidAddress.into());
     }
 
-    let state = get_state(e)?;
+    let vesting_period = get_vesting_period(e)?;
     let mut position = get_user_asset_position_unchecked(e, user, asset);
     let asset_reward_index = get_asset_reward_index(e, asset)?;
 
@@ -1467,7 +1475,7 @@ pub fn preview_user_asset_rewards(
     accrue_asset_position_rewards(e, asset_reward_index, &mut position)?;
 
     let current_timestamp = e.ledger().timestamp();
-    let vested = calculate_vested_rewards(current_timestamp, &position, state.vesting_period)?;
+    let vested = calculate_vested_rewards(current_timestamp, &position, vesting_period)?;
 
     Ok(UserRewardSnapshot {
         reward_index: position.reward_index,

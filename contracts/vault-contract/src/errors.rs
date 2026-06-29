@@ -298,6 +298,7 @@ impl From<ValidationError> for VaultError {
             ValidationError::InvalidTokenConfiguration => Self::InvalidTokenConfiguration,
             ValidationError::InsufficientRewardAmount => Self::InsufficientRewardAmount,
             ValidationError::InvalidLockDuration => Self::InvalidLockDuration,
+            ValidationError::InvalidPenaltyRate => Self::InvalidPenaltyRate,
             ValidationError::InvalidUtilizationParameters => Self::InvalidUtilizationParameters,
         }
     }

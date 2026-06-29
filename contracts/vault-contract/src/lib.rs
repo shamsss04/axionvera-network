@@ -91,10 +91,10 @@ impl VaultContract {
         from.require_auth();
 
         with_non_reentrant(&e, || {
-            let state = storage::get_state(&e)?;
+            let deposit_token = storage::get_deposit_token(&e)?;
             CrossContractClient::token_transfer(
                 &e,
-                &state.deposit_token,
+                &deposit_token,
                 &from,
                 &e.current_contract_address(),
                 amount,
@@ -113,14 +113,14 @@ impl VaultContract {
         to.require_auth();
 
         with_non_reentrant(&e, || {
-            let state = storage::get_state(&e)?;
-            let (state, position) = storage::store_withdraw(&e, &to, amount)?;
+            let deposit_token = storage::get_deposit_token(&e)?;
+            let (_state, position) = storage::store_withdraw(&e, &to, amount)?;
 
             events::emit_withdraw(&e, to.clone(), amount, position.balance);
 
             CrossContractClient::token_transfer(
                 &e,
-                &state.deposit_token,
+                &deposit_token,
                 &e.current_contract_address(),
                 &to,
                 amount,
@@ -139,9 +139,8 @@ impl VaultContract {
             return Err(ValidationError::InsufficientRewardAmount.into());
         }
 
-        let state = storage::get_state(&e)?;
-        let admin = state.admin.clone();
-        let reward_token_id = state.reward_token.clone();
+        let admin = storage::get_admin(&e)?;
+        let reward_token_id = storage::get_reward_token(&e)?;
 
         admin.require_auth();
 
@@ -459,13 +458,12 @@ impl VaultContract {
             return Err(ValidationError::InvalidAddress.into());
         }
 
-        let state = storage::get_state(&e)?;
-        let stored_admin = state.admin.clone();
+        let stored_admin = storage::get_admin(&e)?;
         if admin != stored_admin {
             return Err(AuthorizationError::Unauthorized.into());
         }
 
-        let reward_token_id = state.reward_token.clone();
+        let reward_token_id = storage::get_reward_token(&e)?;
         admin.require_auth();
 
         with_non_reentrant(&e, || {
