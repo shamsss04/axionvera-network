@@ -1,5 +1,6 @@
 #![no_std]
 
+mod access;
 pub mod cross_contract;
 pub mod errors;
 pub mod events;
@@ -46,7 +47,7 @@ impl VaultContract {
         validate_distinct_token_addresses(&deposit_token, &reward_token)?;
         validate_utilization_multipliers(&utilization_multipliers)?;
 
-        admin.require_auth();
+        access::require_actor(&admin)?;
 
         storage::initialize_state(
             &e,
@@ -66,7 +67,7 @@ impl VaultContract {
         storage::require_initialized(&e)?;
 
         let admin = storage::get_admin(&e)?;
-        admin.require_auth();
+        access::require_stored_admin(&admin)?;
 
         storage::set_pending_admin(&e, &new_admin);
         events::emit_admin_transfer_proposed(&e, admin, new_admin);
@@ -76,14 +77,10 @@ impl VaultContract {
 
     pub fn accept_admin(e: Env, new_admin: Address) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
-        new_admin.require_auth();
 
         let previous_admin = storage::get_admin(&e)?;
         let pending_admin = storage::get_pending_admin(&e)?.ok_or(StateError::NoPendingAdmin)?;
-
-        if pending_admin != new_admin {
-            return Err(AuthorizationError::Unauthorized.into());
-        }
+        access::require_pending_admin(&new_admin, Some(pending_admin.clone()))?;
 
         storage::set_admin(&e, &new_admin);
         storage::clear_pending_admin(&e);
@@ -96,7 +93,7 @@ impl VaultContract {
         storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
         validate_positive_amount(amount)?;
-        from.require_auth();
+        access::require_actor(&from)?;
 
         with_non_reentrant(&e, || {
             let state = storage::get_state(&e)?;
@@ -164,7 +161,7 @@ impl VaultContract {
         storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
         validate_positive_amount(amount)?;
-        to.require_auth();
+        access::require_actor(&to)?;
 
         with_non_reentrant(&e, || {
             let state = storage::get_state(&e)?;
@@ -230,7 +227,7 @@ impl VaultContract {
         let admin = state.admin.clone();
         let reward_token_id = state.reward_token.clone();
 
-        admin.require_auth();
+        access::require_stored_admin(&admin)?;
 
         with_non_reentrant(&e, || {
             CrossContractClient::token_transfer(
@@ -259,7 +256,7 @@ impl VaultContract {
         if duration_seconds == 0 {
             return Err(ValidationError::InvalidLockDuration.into());
         }
-        from.require_auth();
+        access::require_actor(&from)?;
 
         with_non_reentrant(&e, || {
             let unlock_timestamp = e
@@ -276,7 +273,7 @@ impl VaultContract {
     pub fn unlock_expired(e: Env, user: Address, limit: u32) -> Result<i128, VaultError> {
         storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
-        user.require_auth();
+        access::require_actor(&user)?;
 
         // Enforce a maximum limit to prevent budget exhaustion in a single call.
         const MAX_UNLOCK_LIMIT: u32 = 50;
@@ -296,7 +293,7 @@ impl VaultContract {
     pub fn claim_rewards(e: Env, user: Address) -> Result<i128, VaultError> {
         storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
-        user.require_auth();
+        access::require_actor(&user)?;
 
         with_non_reentrant(&e, || {
             let amt = storage::store_claimable_rewards(&e, &user)?;
@@ -417,7 +414,7 @@ impl VaultContract {
     pub fn pause_contract(e: Env) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
         let admin = storage::get_admin(&e)?;
-        admin.require_auth();
+        access::require_stored_admin(&admin)?;
         storage::set_paused(&e, true);
         events::emit_pause(&e, admin);
         Ok(())
@@ -426,7 +423,7 @@ impl VaultContract {
     pub fn unpause_contract(e: Env) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
         let admin = storage::get_admin(&e)?;
-        admin.require_auth();
+        access::require_stored_admin(&admin)?;
         storage::set_paused(&e, false);
         events::emit_unpause(&e, admin);
         Ok(())
@@ -435,10 +432,7 @@ impl VaultContract {
     pub fn set_penalty_rate(e: Env, admin: Address, rate_bps: u32) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
         let stored_admin = storage::get_admin(&e)?;
-        if admin != stored_admin {
-            return Err(AuthorizationError::Unauthorized.into());
-        }
-        admin.require_auth();
+        access::require_admin(&admin, &stored_admin)?;
         if rate_bps > 10000 {
             return Err(ValidationError::InvalidPenaltyRate.into());
         }
@@ -462,7 +456,7 @@ impl VaultContract {
         storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
         validate_positive_amount(amount)?;
-        to.require_auth();
+        access::require_actor(&to)?;
 
         with_non_reentrant(&e, || {
             let (state, position, net_amount, _penalty) =
@@ -482,7 +476,7 @@ impl VaultContract {
     pub fn upgrade(e: Env, new_wasm_hash: BytesN<32>) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
         let admin = storage::get_admin(&e)?;
-        admin.require_auth();
+        access::require_stored_admin(&admin)?;
 
         e.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
@@ -498,10 +492,7 @@ impl VaultContract {
     pub fn add_asset(e: Env, admin: Address, asset: Address) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
         let stored_admin = storage::get_admin(&e)?;
-        if admin != stored_admin {
-            return Err(AuthorizationError::Unauthorized.into());
-        }
-        admin.require_auth();
+        access::require_admin(&admin, &stored_admin)?;
 
         storage::add_supported_asset(&e, &asset)?;
         events::emit_asset_added(&e, asset);
@@ -517,7 +508,7 @@ impl VaultContract {
         storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
         validate_positive_amount(amount)?;
-        from.require_auth();
+        access::require_actor(&from)?;
 
         if !storage::is_asset_supported(&e, &asset) {
             return Err(ValidationError::InvalidAddress.into());
@@ -547,7 +538,7 @@ impl VaultContract {
         storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
         validate_positive_amount(amount)?;
-        to.require_auth();
+        access::require_actor(&to)?;
 
         if !storage::is_asset_supported(&e, &asset) {
             return Err(ValidationError::InvalidAddress.into());
@@ -590,12 +581,8 @@ impl VaultContract {
 
         let state = storage::get_state(&e)?;
         let stored_admin = state.admin.clone();
-        if admin != stored_admin {
-            return Err(AuthorizationError::Unauthorized.into());
-        }
-
         let reward_token_id = state.reward_token.clone();
-        admin.require_auth();
+        access::require_admin(&admin, &stored_admin)?;
 
         with_non_reentrant(&e, || {
             CrossContractClient::token_transfer(
@@ -619,7 +606,7 @@ impl VaultContract {
     ) -> Result<i128, VaultError> {
         storage::require_not_paused(&e)?;
         storage::require_initialized(&e)?;
-        user.require_auth();
+        access::require_actor(&user)?;
 
         if !storage::is_asset_supported(&e, &asset) {
             return Err(ValidationError::InvalidAddress.into());
