@@ -1,12 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
+  "contracts/auth",
   "contracts/vault-contract",
   "contracts/vault-contract-v2",
   "contracts/events",
+  "contracts/accounting",
   "contracts/core",
   "contracts/interfaces",
-  "network-node", "contracts/lifecycle",
+  "contracts/orchestrator",
+  "network-node",
+  "tests/security",
 ]
 
 
