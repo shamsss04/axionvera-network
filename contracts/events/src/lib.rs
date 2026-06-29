@@ -475,3 +475,107 @@ pub struct AssetRegistryUnpausedEvent {
     pub admin: Address,
     pub timestamp: u64,
 }
+
+// ---------------------------------------------------------------------------
+// Policy Engine — protocol identifier and action symbols
+// ---------------------------------------------------------------------------
+
+/// Protocol identifier used as Topic 1 for all policy engine events.
+pub const PROTOCOL_POLICY: Symbol = symbol_short!("AxPolicy");
+
+pub const ACT_POL_INIT: Symbol = symbol_short!("pol_init");
+pub const ACT_POL_ADD: Symbol = symbol_short!("pol_add");
+pub const ACT_POL_UPD: Symbol = symbol_short!("pol_upd");
+pub const ACT_POL_DEL: Symbol = symbol_short!("pol_del");
+pub const ACT_POL_EVAL: Symbol = symbol_short!("pol_eval");
+pub const ACT_POL_ADM_P: Symbol = symbol_short!("pol_adm_p");
+pub const ACT_POL_ADM_A: Symbol = symbol_short!("pol_adm_a");
+pub const ACT_POL_PAUSE: Symbol = symbol_short!("pol_pause");
+pub const ACT_POL_UNPAU: Symbol = symbol_short!("pol_unpau");
+
+// ---------------------------------------------------------------------------
+// Policy Engine event payload structs
+// ---------------------------------------------------------------------------
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyInitializedEvent {
+    pub event_version: u32,
+    pub admin: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyAddedEvent {
+    pub event_version: u32,
+    pub policy_id: BytesN<32>,
+    pub policy_name: Bytes,
+    pub added_by: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyUpdatedEvent {
+    pub event_version: u32,
+    pub policy_id: BytesN<32>,
+    pub policy_name: Bytes,
+    pub updated_by: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyDeletedEvent {
+    pub event_version: u32,
+    pub policy_id: BytesN<32>,
+    pub deleted_by: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyEvaluatedEvent {
+    pub event_version: u32,
+    pub request_caller: Address,
+    pub target_contract: Address,
+    pub target_function: Symbol,
+    pub passed: bool,
+    pub failed_policy_id: Option<BytesN<32>>,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyAdminTransferProposedEvent {
+    pub event_version: u32,
+    pub current_admin: Address,
+    pub pending_admin: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyAdminTransferAcceptedEvent {
+    pub event_version: u32,
+    pub previous_admin: Address,
+    pub new_admin: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyPausedEvent {
+    pub event_version: u32,
+    pub admin: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyUnpausedEvent {
+    pub event_version: u32,
+    pub admin: Address,
+    pub timestamp: u64,
+}
