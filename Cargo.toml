@@ -8,6 +8,7 @@ members = [
   "contracts/accounting",
   "contracts/core",
   "contracts/interfaces",
+  "contracts/integrations",
   "contracts/orchestrator",
   "contracts/rewards",
   "network-node",

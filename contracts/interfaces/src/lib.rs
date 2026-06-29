@@ -124,3 +124,70 @@ pub trait TransactionOrchestrator {
     fn execute_plan(e: Env, plan: ExecutionPlan) -> Result<ExecutionReceipt, OrchestrationError>;
     fn execution_receipt(e: Env, plan_id: BytesN<32>) -> Option<ExecutionReceipt>;
 }
+
+// ===========================================================================
+// EXTERNAL SOROBAN CONTRACT INTEGRATION INTERFACES
+// ===========================================================================
+
+/// Security policy for standardized calls into external Soroban contracts.
+///
+/// Protocol contracts should keep allow-lists narrow and explicitly enumerate
+/// both trusted target addresses and approved function symbols. `allow_self_call`
+/// defaults should remain false in gateway implementations to prevent accidental
+/// recursion into the calling protocol contract.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalCallPolicy {
+    pub allowed_targets: Vec<Address>,
+    pub allowed_functions: Vec<Symbol>,
+    pub max_arguments: u32,
+    pub allow_self_call: bool,
+}
+
+/// Standard envelope for an external contract call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalCall {
+    pub target: Address,
+    pub function: Symbol,
+    pub args: Vec<Val>,
+}
+
+/// Audit receipt emitted or stored by integration gateways after attempts.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalCallReceipt {
+    pub target: Address,
+    pub function: Symbol,
+    pub success: bool,
+    pub timestamp: u64,
+}
+
+/// Validation and execution failures for external integrations.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum IntegrationError {
+    EmptyTargetAllowList = 1,
+    EmptyFunctionAllowList = 2,
+    TargetNotAllowed = 3,
+    FunctionNotAllowed = 4,
+    TooManyArguments = 5,
+    SelfCallBlocked = 6,
+    ExternalInvocationFailed = 7,
+}
+
+/// Reusable interface for validating and invoking external contract calls.
+pub trait ExternalContractGateway {
+    fn validate_call(
+        e: &Env,
+        call: &ExternalCall,
+        policy: &ExternalCallPolicy,
+    ) -> Result<(), IntegrationError>;
+
+    fn invoke_void(
+        e: &Env,
+        call: &ExternalCall,
+        policy: &ExternalCallPolicy,
+    ) -> Result<ExternalCallReceipt, IntegrationError>;
+}
